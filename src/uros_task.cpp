@@ -7,6 +7,10 @@
  * https://micro.ros.org/docs/tutorials/programming_rcl_rclc/micro-ROS/
  * https://micro.ros.org/docs/concepts/client_library/execution_management/
  * 
+ * Information related to microros reconnection to agent:
+ * https://discourse.ros.org/t/hard-liveliness-check-in-micro-ros/24891
+ * https://github.com/micro-ROS/micro_ros_arduino/blob/humble/examples/micro-ros_reconnection_example/micro-ros_reconnection_example.ino
+ * 
  * This file is intended to serve as both an example and a foundation for future 
  * projects that require more complex routines. 
  */
@@ -28,6 +32,11 @@
 
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){uros_error_loop();}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
+#define REPETITIVE_TASK_MS(MS, X)  do { \
+    static volatile int64_t init = -1; \
+    if (init == -1) { init = uxr_millis();} \
+    if (uxr_millis() - init > MS) { X; init = uxr_millis();} \
+} while (0);\
 
 #define SUPPORT_INT32 ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32)
 
@@ -74,6 +83,9 @@ volatile int32_t count_up;
 volatile int32_t count_down;
 
 
+static void uros_create_entities();
+static void uros_destroy_entities();
+static void uros_reconnect();
 static void uros_error_loop();
 static void uros_publish_data(uros_timer * timer, int64_t last_call);
 static void uros_sub1_callback(const void * msgin);
@@ -84,13 +96,37 @@ void uros_init() {
     Serial.begin(115200);
     set_microros_serial_transports(Serial);
 
-    // Memory allocator object:
-    allocator = rcl_get_default_allocator();
-
     // This line blocks until a microros agent answer with a ping
     while (RMW_RET_OK != rmw_uros_ping_agent(10, 1)) {
         delay(100);
     }
+
+    uros_create_entities();
+}
+
+
+void uros_spin() {
+    // This is important
+    // We want executor to check if something is ready to run and return 
+    // inmediately if nothing is ready. 
+    // Since this is underlying mbed we are freeing resources
+    // so another tasks can run when using arduino-delay function.
+    RCSOFTCHECK(rclc_executor_spin_some(&executor, 0));
+    delay(spin_period);
+
+    // reconnection task (check every 3s)
+    REPETITIVE_TASK_MS(
+        3000,
+        if (RMW_RET_OK != rmw_uros_ping_agent(10, 1)) uros_reconnect()
+    )
+}
+
+
+// ===== Private methods =====
+
+static void uros_create_entities() {
+    // Memory allocator object:
+    allocator = rcl_get_default_allocator();
 
     // Starting uros node
     RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
@@ -117,19 +153,28 @@ void uros_init() {
 }
 
 
-void uros_spin() {
-    // This is important
-    // We want executor to check if something is ready to run and return 
-    // inmediately if nothing is ready. 
-    // Since this is underlying mbed we are freeing resources
-    // so another tasks can run when using arduino-delay function.
-    RCSOFTCHECK(rclc_executor_spin_some(&executor, 0));
-    delay(spin_period);
+static void uros_destroy_entities() {
+    rmw_context_t * rmw_context = rcl_context_get_rmw_context(&support.context);
+    (void) rmw_uros_set_context_entity_destroy_session_timeout(rmw_context, 0);
+
+    rcl_publisher_fini(&publisher1, &node);
+    rcl_publisher_fini(&publisher2, &node);
+    rcl_subscription_fini(&sub1, &node);
+    rcl_timer_fini(&timer1);
+    rclc_executor_fini(&executor);
+    rcl_node_fini(&node);
+    rclc_support_fini(&support);
+}
+
+
+static void uros_reconnect() {
+    uros_destroy_entities();
+    uros_init();
 }
 
 
 // Error handling. Indicating uros errors through rpico led.
-void uros_error_loop() {
+static void uros_error_loop() {
     while(1) {
         digitalWrite(25, HIGH);
         delay(50);
@@ -139,7 +184,7 @@ void uros_error_loop() {
 }
 
 // Periodically exposing data via topics
-void uros_publish_data(uros_timer * timer, int64_t last_call) {
+static void uros_publish_data(uros_timer * timer, int64_t last_call) {
     std_msgs__msg__Int32 msg;
     msg.data = count_up;
  
@@ -150,7 +195,7 @@ void uros_publish_data(uros_timer * timer, int64_t last_call) {
 }
 
 
-void uros_sub1_callback(const void * msgin) {
+static void uros_sub1_callback(const void * msgin) {
     // Storing incoming value altough not used for this example
     int32_t data = ((std_msgs__msg__Int32 *) msgin) -> data;
 
