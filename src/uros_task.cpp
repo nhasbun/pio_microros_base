@@ -29,6 +29,13 @@
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){uros_error_loop();}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
 
+#define SUPPORT_INT32 ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32)
+
+#define publisher_init(...) RCCHECK(rclc_publisher_init_default(__VA_ARGS__))
+#define subscriber_init(...) RCCHECK(rclc_subscription_init_default(__VA_ARGS__))
+#define timer_init(timer, support, period, callback) \
+        RCCHECK(rclc_timer_init_default(timer, support, RCL_MS_TO_NS(period), callback))
+
 
 typedef rcl_allocator_t uros_allocator;
 typedef rclc_support_t uros_support;
@@ -90,45 +97,19 @@ void uros_init() {
     RCCHECK(rclc_node_init_default(&node, node_id, "", &support));
 
     // Creating publishers
-    RCCHECK(rclc_publisher_init_default(
-        &publisher1,
-        &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-        topic1));
-
-    RCCHECK(rclc_publisher_init_default(
-        &publisher2,
-        &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-        topic2)); 
+    publisher_init(&publisher1, &node, SUPPORT_INT32, topic1)
+    publisher_init(&publisher2, &node, SUPPORT_INT32, topic2)
 
     // Configuring subscribers
-	RCCHECK(rclc_subscription_init_default(
-		&sub1,
-		&node,
-		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-		topic_sub1));
+	subscriber_init(&sub1, &node, SUPPORT_INT32, topic_sub1)
 
     // Configuring timers
-    RCCHECK(rclc_timer_init_default(
-        &timer1,
-        &support,
-        RCL_MS_TO_NS(timer_period),    
-        uros_publish_data));
+    timer_init(&timer1, &support, timer_period, uros_publish_data)
 
     // Configuring executors
     RCCHECK(rclc_executor_init(&executor, &support.context, num_handles, &allocator));
-
-    RCCHECK(rclc_executor_add_subscription(
-        &executor, 
-        &sub1, 
-        &sub1_invalue,
-        &uros_sub1_callback, 
-        ON_NEW_DATA));
-
-    RCCHECK(rclc_executor_add_timer(
-        &executor, 
-        &timer1));
+    RCCHECK(rclc_executor_add_subscription( &executor, &sub1, &sub1_invalue, &uros_sub1_callback, ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_timer( &executor, &timer1));
 
     // Init any other thing related to your application
     count_up = 0;
